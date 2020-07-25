@@ -82,3 +82,57 @@
             in which case client SSL certificates provide authentication.
 
 
+    + Using graphical administration tools :
+
+    - Launch PGADMIN -> click on connect to a server -> add credentials :
+
+    Name : localserver
+    Host : localhost
+    user : mdrahali
+    password : m****
+
+    - click on connect.
+
+    - Two ways to connect to a PostgreSQL :
+
+    $ psql postgres://mdrahali:mohamed-2@localhost:5432/blog
+    $ psql -h localhost -p 5432 -d blog -U mdrahali
+    command prompt will give you space to enter your password in a secret way.
+
+    - execute sql command from psql scripting tool :
+    $ psql -d blog -c "SELECT current_time" ;
+
+    - The -c command is non-interactive. If we want to execute multiple commands, we can write those commands in a text file and then execute them using the -f option. This command loads a very small and simple set of examples:
+    $ psql -f examples.sql
+
+    - The psql tool can also be used with both the -c and -f modes together; each one can be used multiple times. In this case, it will execute all the commands consecutively:
+    $ psql -c "SELECT current_time" –f examples.sql -c "SELECT current_time"
+
+    - connect to the database :
+    $ psql -d blog
+
+    - A meta-command is a command for the psql client, whereas SQL is sent to the database server. An example of a meta-command is \q, which tells the client to disconnect. All lines that begin with \ (backslash) as the
+    first nonblank character are presumed to be meta-commands of some kind.
+
+    + get help on Meta-commands :
+    $ \?
+
+    + get help on SQL commands :
+    $ \h
+
+    += Consider the following snippet as an example:
+       postgres=# \h DELETE
+       Command: DELETE
+       Description: delete rows of a table
+       Syntax:
+       [ WITH [ RECURSIVE ] with_query [, ...] ]
+       DELETE FROM [ ONLY ] table [ [ AS ] alias ]
+           [ USING usinglist ]
+           [ WHERE condition | WHERE CURRENT OF cursor_name ]
+           [ RETURNING * | output_expression [ AS output_name ] [,]]
+
+    -> Autocompletion Feature :
+    ++ You'll get a lot of benefits from tab completion, which will fill in the next part of the syntax when you press the Tab key. This also works for object names, so you can type in just the first few letters and then
+       press Tab; all the options will be displayed. Thus, you can type in just enough letters to make the object name unique, and then hit Tab to get the rest of the name.
+
+
