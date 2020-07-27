@@ -135,4 +135,50 @@
     ++ You'll get a lot of benefits from tab completion, which will fill in the next part of the syntax when you press the Tab key. This also works for object names, so you can type in just the first few letters and then
        press Tab; all the options will be displayed. Thus, you can type in just enough letters to make the object name unique, and then hit Tab to get the rest of the name.
 
+    Changing your password securely
+    If you are using password authentication, then you may wish to change your password from time to time.
 
+    $ psql -d blog
+    $ SET password_encryption = 'scram-sha-256';
+    $ \password
+
+    - Make sure you use SCRAM-SHA-256 encryption, not the older and easily compromised md5 encryption. Whatever you do, don't use postgres as your password. This will make you vulnerable to idle hackers, so make it a little more difficult than that!s
+
+    + You may wonder, how long has it been since the server started?
+
+    $ SELECT date_trunc('second', current_timestamp - pg_postmaster_start_time()) as uptime;
+
+    Postgres stores the server start time, so we can access it directly, as follows:
+    $ SELECT pg_postmaster_start_time();
+
+    - Locating the database server files
+    Database server files are initially stored in a location referred to as the data directory. Additional data files may also be stored in tablespaces, if any exist.
+
+    The following are the system default data directory locations:
+
+    Debian or Ubuntu systems: /var/lib/postgresql/MAJOR_RELEASE/main
+    Red Hat RHEL, CentOS, and Fedora: /var/lib/pgsql/data/
+    Windows: C:\Program Files\PostgreSQL\MAJOR_RELEASE\data
+
+    initdb -D /usr/local/pgsql/data
+
+    # service postgresql initdb
+    # systemctl enable postgresql
+    # systemctl start postgresql
+
+    - locating logs :
+
+    The following are the default server log locations:
+    Debian or Ubuntu systems: /var/log/postgresql
+    Red Hat, RHEL, CentOS, and Fedora: /var/lib/pgsql/data/pg_log
+
+
+    - Locating the database's system identifier
+    Each database server has a system identifier assigned when the database is initialized (created). The server identifier remains the same if the server is backed up, cloned, and so on.
+    Many actions on the server are keyed to the system identifier, and you may be asked to provide this information when you report a fault.
+
+    In order to display the system identifier, we just need to launch the following command:
+    $ pg_controldata <data-directory> | grep "system identifier"
+
+    Note that the preceding syntax will not work on Debian or Ubuntu systems, for the same reasons explained for initdb in the Locating the database server files recipe. However, in this case, there is no postgresql-common alternative, so if you must run pg_controldata, you need to specify the full path to the executable, as in this example:
+    /usr/lib/postgresql/11/bin/pg_controldata $PGDATA
