@@ -472,3 +472,65 @@
     Execute the preceding procedure like this:
        CALL annual_pay_rise();
 
+    Typical user role
+    The minimal production database setup contains at least two types of users, namely administrators and end users, where administrators can do everything (they are superusers), and end users can only do very little, usually just modifying the data in only a few tables and reading from a few more.
+    It is not a good idea to let ordinary users create or change database object definitions, meaning that they should not have the CREATE privilege on any schema, including PUBLIC.
+
+    + Create superuser :
+    $ CREATE USER username SUPERUSER;
+
+    + Update user from superuser to a normal user :
+    $ ALTER USER username NOSUPERUSER;
+
+    $ ALTER USER username SUPERUSER;
+
+    ++ The PostgreSQL system comes set up with at least one superuser. Most commonly, this superuser is named postgres, but occasionally it adopts the same name as the system user who owns the database directory and with whose rights the PostgreSQL server runs.
+
+    - Revoking user access to a table :
+    This recipe answers the question: how do I make sure that user X cannot access table Y?
+
+    To revoke all rights on the table1 table from the user2 user, you must run the following SQL command:
+    $ REVOKE ALL ON table1 FROM user2;
+    $ REVOKE role3 FROM user2; # because if we let user2 make apart from role3 all users that are role3 will not have access to table1.
+
+
+    + Display Access priveliged :
+    $ \dp postgres
+
+    - Grant access certains operatons to some users :
+    The following is a sample extract from the database creation script:
+       CREATE TABLE table1(
+       ...
+       );
+       GRANT SELECT ON table1 TO webreaders;
+       GRANT SELECT, INSERT, UPDATE, DELETE ON table1 TO editors;
+       GRANT ALL ON table1 TO admins;
+
+    + Create a User :
+    $ createuser bob
+
+    - Temporarily preventing a user from connecting
+    $ alter user bob nologin;
+    $ alter user bob login;
+
+    NB: telling PostgreSQL not to let the user log in. It does not kick out already connected users.
+
+    Limiting the number of concurrent connections by a user
+    The same result can be achieved by setting the connection limit for that user to 0:
+    $ pguser=# alter user bob connection limit 0;
+
+    To allow 10 concurrent connections for the bob user, run this command:
+    $ pguser=# alter user bob connection limit 10;
+
+    To allow an unlimited number of connections for this user, run the following:
+    $ pguser=# alter user bob connection limit -1;
+
+    - Forcing NOLOGIN users to disconnect :
+    In order to make sure that all users whose login privileges have been revoked are disconnected right away, run the following SQL statement as a superuser:
+       SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity a
+          JOIN pg_roles r ON a.usename = r.rolname AND NOT rolcanlogin;
+
+    This disconnects all users who no longer are allowed to connect by terminating the backends opened by these users.
+
+    
