@@ -357,4 +357,118 @@
     - Update Version of an Extension :
     $ ALTER EXTENSION mytext UPDATE TO '1.1';
 
+    - Start Postgres on Linux System :
+    $ sudo systemctl start postgresql
+
+    - Stop server Fastly :
+    $ pg_ctlcluster 11 main stop -m fast
+
+    + When you do a fast stop, all users have their transactions aborted and all connections are disconnected. This is not very polite to users, but it still treats the server and its data with care, which is good.
+
+    - Stop server Immediately :
+    $ pg_ctlcluster 11 main stop -m immediate
+
+    + Preventing new connections :
+    In certain emergencies, you may need to lock down the server completely, or just prevent specific users from accessing the database. It's hard to foresee all the situations in which you might need to do this,
+    so we will present a range of options.
+
+    Restrict the connections for a specific database to zero, by setting the connection limit to zero:
+           $ ALTER DATABASE foo_db CONNECTION LIMIT 0;
+
+    This will limit normal users from connecting to that database, though it will still allow superuser connections.
+    Restrict the connections for a specific user to zero by setting the connection limit to zero (see the Restricting users to only one session each recipe):
+           $ ALTER USER foo CONNECTION LIMIT 0;
+
+
+    We can restrict users to only one connection using the following command:
+       postgres=# ALTER ROLE fred CONNECTION LIMIT 1;
+
+    + Create Multiple Database Servers on one system :
+    $ sudo -u postgres pg_createcluster 11 main2
+    $ sudo -u postgres pg_ctlcluster 11 main2 start
+
+    The data and configuration files are stored inside the /var/lib/postgresql/11/main2/ and /etc/postgresql/11/main2/ directories, respectively, giving the new database the next unused port number, for example, 5433 if this
+    is the second PostgreSQL server on that machine.
+
+    $ psql --cluster 11/main2
+
+    With Red Hat systems, you will need to run initdb directly, selecting your directories carefully:
+    1. First, initialize your data directory with something such as the following:
+               sudo -u postgres initdb -D /var/lib/pgsql/datadir2
+
+    + Removing duplicate :
+
+    $ CREATE UNLOGGED TABLE dup_cust AS
+       SELECT *
+       FROM cust
+       WHERE customerid IN
+        (SELECT customerid
+         FROM cust
+         GROUP BY customerid
+         HAVING count(*) > 1);
+
+
+    $ DELETE FROM new_cust
+           USING dups_cust
+           WHERE new_cust.customerid = dups_cust.customerid
+           AND new_cust.ctid != dups_cust.min_ctid;
+
+    $ COMMIT;
+    $ VACUUM new_cust;
+
+    + Genrating a Test Sample :
+    $ SELECT date(t)
+           FROM generate_series(now(),
+             now() + '1 week', '1 day') AS f(t);
+
+    + Dump data from a database to a flat file :
+
+    $ touch csv.load
+    LOAD CSV
+        FROM '/tmp/file.csv' (x, y, a, b, c, d)
+        INTO postgresql://postgres@localhost:5432/postgres?csv (a, b, d, c)
+        WITH truncate,
+             skip header = 1,
+             fields optionally enclosed by '"',
+             fields escaped by double-quote,
+             fields terminated by ','
+         SET client_encoding to 'latin1',
+             work_mem to '12MB',
+             standard_conforming_strings to 'on'
+      BEFORE LOAD DO
+       $$ drop table if exists csv; $$,
+       $$ create table csv (
+           a bigint,
+           b bigint,
+           c char(2),
+           d text
+    ); $$;
+
+    $ brew install pgloader
+    $ cd /private/tmp/
+    $ touch file.csv
+    $ pgloader csv.load
+
+    + Create a procedure to execute a transaction that update multiple employees :
+    As an example, let's consider a case where we need to update all employees with the A2 job grade, giving each person a 2% pay rise:
+
+       CREATE PROCEDURE annual_pay_rise ()
+       LANGUAGE plpgsql AS $$
+       DECLARE
+       c CURSOR FOR
+       SELECT * FROM employee
+           WHERE job_code = 'A2';
+       BEGIN
+       FOR r IN c LOOP
+       UPDATE employee
+       SET salary = salary * 1.02
+       WHERE empid = r.empid;
+        IF mod (r.empid, 100) = 0 THEN
+       COMMIT;
+       END IF;
+       END LOOP;
+       END; $$;
+
+    Execute the preceding procedure like this:
+       CALL annual_pay_rise();
 
