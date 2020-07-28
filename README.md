@@ -533,4 +533,183 @@
 
     This disconnects all users who no longer are allowed to connect by terminating the backends opened by these users.
 
-    
+    To give the bob role the ability to create new databases, run this:
+    $ ALTER ROLE BOB WITH CREATEDB;
+
+    To give the bob role the ability to create new users, run the following:
+    $ ALTER ROLE BOB WITH CREATEROLE;
+
+    + Connecting using SSL
+    $ Set ssl = on in postgresql.conf and restart the database.
+
+    + Writing a script that either succeeds entirely or fails entirely :
+
+    The basic way to ensure that we get all commands successful or none at all is to literally wrap our script into a transaction, as follows:
+       BEGIN;
+       command 1;
+       command 2;
+       command 3;
+       COMMIT;
+
+    From psql, you can do this by simply using the -1 or --single-transaction command-line options, as follows:
+    bash $ psql -1 -f myscript.sql
+    bash $ psql --single-transaction -f myscript.sql
+    The -1 option is short, but I recommend using --single-transaction, as it's much clearer which option is being selected.
+
+    + Get More clearer error messages :
+    Check the following example to understand the usage of the \errverbose meta-command.
+    1. Suppose you hit an error, as in the following query, and verbose reporting was not enabled:
+               postgres=# create table wrongname();
+               ERROR:  relation "wrongname" already exists
+    2. The extra detail that is not displayed is nevertheless remembered by psql, so you can view it as follows:
+               postgres=# \errverbose
+               ERROR:  42P07: relation "wrongname" already exists
+               LOCATION:  heap_create_with_catalog, heap.c:1067
+
+    + Change DateType of column in a table :
+     postgres=# ALTER TABLE birthday
+                  ALTER COLUMN dob SET DATA TYPE integer
+                  USING dob::integer;
+
+     postgres=# ALTER TABLE birthday
+       ALTER COLUMN dob SET DATA TYPE date
+       USING date(to_date(dob::text, 'YYMMDD') -
+             (CASE WHEN dob/10000 BETWEEN 16 AND 69 THEN interval '100
+               years'
+              ELSE interval '0' END));
+
+     Now, it gives us what we were hoping to see:
+       postgres=# select * from birthday;
+        name  |    dob
+       -------+------------
+        simon | 26/09/1969
+       (1 row)
+
+    First, we can't move directly from integer to date. We need to convert it into text and then to date. The dob::text statement means cast to text.
+    Once we have text, we use the to_date() function to move to a date type.
+    This is not enough; our starting data was 690926, which we presume is a date in the YYMMDD format. When PostgreSQL converts this data into a date, it assumes that the two-digit year, 69, is in the current century because it chooses the year nearest to 2020. So, it outputs 2069 rather than 1969. This is why a case statement is added to reduce any year between 16 and 69 to be a date in the previous century by explicitly subtracting an interval of 100 years. We do not need to take away one century for years after 69 because they are already placed in the 20th century.
+
+    + Create a datatype :
+     Enumerative data types are defined like this:
+       CREATE TYPE satellites_urani AS ENUM ('titania','oberon');
+        The other popular case is composite data types, which are created as follows:
+           CREATE TYPE node AS
+           ( node_name text,
+             connstr text,
+             standbys text[]);
+
+    - Using materialized views :
+    Every time we select rows from a view, we actually select from the result of the underlying query. If that query is slow and we need to use it more than once, then it makes sense to run the query once, save its output as a table, and then select the rows from the latter.
+    This procedure has been available for a long time, and there is a dedicated syntax, CREATE MATERIALIZED VIEW, which we will describe in this recipe.
+
+        CREATE TABLE dish
+       ( dish_id SERIAL PRIMARY KEY
+         , dish_description text
+       );
+
+
+       CREATE TABLE eater
+       ( eater_id SERIAL
+       , eating_date date
+       , dish_id int REFERENCES dish (dish_id)
+       );
+
+       INSERT INTO dish (dish_description)
+       VALUES ('Lentils'), ('Mango'), ('Plantain'), ('Rice'), ('Tea');
+
+       INSERT INTO eater(eating_date, dish_id)
+
+       SELECT floor(abs(sin(n)) * 365) :: int + date '2014-01-01'
+       , ceil(abs(sin(n :: float * n))*5) :: int
+       FROM generate_series(1,500000) AS rand(n);
+
+    - Standard View :
+
+    Let's create the following view:
+       CREATE VIEW v_dish AS
+       SELECT dish_description, count(*)
+       FROM dish JOIN eater USING (dish_id)
+       GROUP BY dish_description
+       ORDER BY 1;
+    Then, we'll query it:
+       SELECT * FROM v_dish;
+
+    - Metrialized View :
+
+      With a very similar syntax, we create a materialized view with the same underlying query:
+       CREATE MATERIALIZED VIEW m_dish AS
+       SELECT dish_description, count(*)
+       FROM dish JOIN eater USING (dish_id)
+       GROUP BY dish_description
+       ORDER BY 1;
+
+    The corresponding query yields the same output as before:
+       SELECT * FROM m_dish;
+
+    ++ The materialized version is much faster than the non-materialized version. On my laptop, their execution times are 0.2 milliseconds versus 300 milliseconds.
+
+    How it works...
+    Creating a non-materialized view is exactly the same as creating an empty table with a SELECT rule, as we discovered from the previous recipe. No data is extracted until the view is actually used.
+    When creating a materialized view, the default is to run the query immediately and then store its results, as we do for table content.
+    In short, creating a materialized view is slow, but using it is fast. This is the opposite of standard views, which are created instantly and recomputed at every use.
+
+    A materialized view will not automatically change when its constituent tables change. For that to happen, you must issue the following:
+    REFRESH MATERIALIZED VIEW m_dish;
+
+    A materialized view cannot be read while it is being refreshed. For that, you need to use the CONCURRENTLY clause at the expense of a somewhat slower refresh.
+
+    - Solution for monitoring resources usage in a database server :
+
+    $ CREATE EXTENSION adminpack;
+
+    + Check weather a user is connected or not :
+
+    $ SELECT datname FROM pg_stat_activity WHERE usename = 'mdrahali';
+
+    + check Computer connected :
+    $ SELECT datname, usename, client_addr, client_port,
+          application_name FROM pg_stat_activity;
+
+
+    - The \watch meta-command allows psql users to automatically (and continuously) re-execute a query.
+
+    $ SELECT count(*) FROM pg_stat_activity;
+    $ \watch
+
+    + Checking which queries are running currently :
+
+    $ SELECT datname, usename, state, query
+              FROM pg_stat_activity;
+
+    $ SELECT datname, usename, state, query
+          FROM pg_stat_activity WHERE state = 'active';
+
+    + Watching the longest queries :
+
+        SELECT
+        current_timestamp - query_start AS runtime,
+        datname, usename, query
+        FROM pg_stat_activity
+        WHERE state = 'active'
+        ORDER BY 1 DESC;
+
+    + On busy systems, you may want to limit the set of queries that are returned to only the first few queries (add LIMIT 10 at the end) or
+      only the queries that have been running over a certain period of time. For example, to get a list of queries that have been running for
+      more than a minute, use the following query:
+
+       SELECT
+           current_timestamp - query_start AS runtime,
+           datname, usename, query
+       FROM pg_stat_activity
+       WHERE state = 'active'
+             AND current_timestamp - query_start > '1 min'
+       ORDER BY 1 DESC;
+
+    - Watching queries from ps :
+    If you want, you can also make queries that are being run show up in process titles, by setting the following configuration in the postgresql.conf file:
+       update_process_title = on
+
+    + Finding unused indexes :
+    $ SELECT schemaname, relname, indexrelname, idx_scan FROM pg_stat_user_indexes ORDER BY idx_scan;
+
+
