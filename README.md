@@ -712,4 +712,130 @@
     + Finding unused indexes :
     $ SELECT schemaname, relname, indexrelname, idx_scan FROM pg_stat_user_indexes ORDER BY idx_scan;
 
+    - Finding slow SQL statements :
+
+    There are two main kinds of slowness that can manifest themselves in a database.
+    The first kind is a single query that can be too slow to be really usable, such as a customer information query in a CRM running for minutes, a password check query running in tens of seconds,
+    or a daily data aggregation query running for more than a day. These can be found by logging queries that take over a certain amount of time, either at the client end or in the database.
+    The second kind is a query that is run frequently (say a few thousand times a second) and used to run in single-digit milliseconds, but is now running in several tens or even hundreds of milliseconds,
+    hence slowing the system down. This kind of slowness is much harder to find.
+
+    $ CREATE EXTENSION pg_stat_statements;
+    $ ALTER SYSTEM
+             SET shared_preload_libraries = 'pg_stat_statements';
+
+    $ brew services restart postgresql
+
+    $ SELECT calls, total_time, query FROM pg_stat_statements
+            ORDER BY total_time DESC LIMIT 10;
+
+    - Another way to find slow queries is to set up PostgreSQL to log them all. So, if you decide to monitor a query that takes over 10 seconds, then set up logging queries over 10 seconds by executing the following command:
+    $ postgres=# ALTER SYSTEM
+             SET log_min_duration_statement = 10000;
+
+
+    - Explain and Analyse why a query take too much time :
+    $ EXPLAIN (ANALYZE, BUFFERS) .. SQL Query ..
+    $ EXPLAIN (ANALYZE, BUFFERS) SELECT calls, total_time, query FROM pg_stat_statements
+            ORDER BY total_time DESC LIMIT 10;
+
+
+    + Enhancing Performancing and reducing execution time using indexes:
+
+       postgres=# CREATE TABLE events(id SERIAL);
+       CREATE TABLE
+       postgres=# INSERT INTO events SELECT generate_series(1,1000000);
+       INSERT 0 1000000
+       postgres=# EXPLAIN (ANALYZE)
+                    SELECT * FROM events ORDER BY id DESC LIMIT 3;
+                               QUERY PLAN
+   --------------------------------------------------------------
+     Limit  (cost=25500.67..25500.68 rows=3 width=4) \
+           (actual time=3143.493..3143.502 rows=3 loops=1)
+       ->  Sort  (cost=25500.67..27853.87 rows=941280 width=4)
+              (actual time=3143.488..3143.490 rows=3 loops=1)
+            Sort Key: id DESC
+            Sort Method: top-N heapsort Memory: 25kB
+       ->  Seq Scan on events
+              (cost=0.00..13334.80 rows=941280 width=4)
+              (actual time=0.105..1534.418 rows=1000000 loops=1)
+    Planning time: 0.331 ms
+     Execution time: 3143.584 ms
+       (10 rows)
+       postgres=# CREATE INDEX events_id_ndx ON events(id);
+       CREATE INDEX
+       postgres=# EXPLAIN (ANALYZE)
+                    SELECT * FROM events ORDER BY id DESC LIMIT 3;
+                               QUERY PLAN
+                  Limit  (cost=0.00..0.08 rows=3 width=4) (actual
+                  time=0.295..0.311 rows=3 loops=1)
+                  ->  Index Scan Backward using events_id_ndx on events
+                       (cost=0.00..27717.34 rows=1000000 width=4) (actual
+                       time=0.289..0.295 rows=3 loops=1)
+                Total runtime: 0.364 ms
+                (3 rows)
+
+
+    - Check for cpu use :
+
+    $ top
+    First, watch the percentage of idle CPU from top. If this is in low single digits most of the time, you probably have problems with the CPU's power.
+
+
+    - Get Query Analysis in JSON format :
+    $ EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) SELECT count(*) FROM topology;
+
+    - Consider the following scenario: a full-text search returns 10,000 documents, but only the first 20 are displayed to users. In this case, order the documents by rank on the server, and return only the top 20 that actually need to be displayed:
+
+       SELECT title, ts_rank_cd(body_tsv, query, 20) AS text_rank
+       FROM articles, plainto_tsquery('spicy potatoes') AS query
+       WHERE body_tsv @@ query
+       ORDER BY rank DESC
+       LIMIT 20 ;
+
+    If you need the next 20 documents, don't just query with a limit of 40 and throw away the first 20. Instead, use OFFSET 20 LIMIT 20 to return the next 20 documents.
+    To gain some stability so that documents with the same rank still come out in the same order when using OFFSET 20, add a unique field (such as the id column of the articles table) to ORDER BY in both queries:
+       SELECT title, ts_rank_cd(body_tsv, query, 20) AS text_rank
+       FROM articles, plainto_tsquery('spicy potatoes') AS query
+       WHERE body_tsv @@ query
+       ORDER BY rank DESC, articles.id
+       OFFSET 20 LIMIT 20;
+
+    - Partial Indexing  :
+
+    Another technique for making indexes more usable is partial indexes. Instead of indexing all of the values in a column, you might choose to index only the set of rows that are frequently accessed, for example, by excluding NULL or other unwanted data. By making the index smaller, it will be cheaper to access and fit within the cache better, avoiding pointless work by targeting the index at only the important data. Data statistics are kept for such indexes, so it can also improve the accuracy of query planning. Let's look at an example:
+       CREATE INDEX ON customer(id)
+        WHERE blocked = false AND subscription_status = 'paid';
+
+    - Parallel Query :
+
+    Take a query that needs to do a big chunk of work, such as the following:
+       \timing
+       SELECT count(*) FROM accounts;
+       count
+       ---------
+       1000000
+       (1 row)
+       Time: 261.652 ms
+       SET max_parallel_workers_per_gather = 8;
+       SELECT count(*) FROM accounts;
+       count
+       ---------
+       1000000
+       (1 row)
+       Time: 180.513 ms
+
+    By setting the max_parallel_workers_per_gather parameter, we've improved performance using parallel query. Note that we didn't need to change the query at all.
+
+    - Using optimistic locking:
+
+    If you perform work in one long transaction, the database will lock rows for long periods of time. Long lock times often result in application performance issues because of long lock waits:
+       BEGIN;
+       SELECT * FROM accounts WHERE holder_name ='BOB' FOR UPDATE;
+       <do some calculations here>
+       UPDATE accounts SET balance = 42.00 WHERE holder_name ='BOB';
+       COMMIT;
+    If that is happening, then you may gain some performance by moving from explicit locking (SELECT ... FOR UPDATE) to optimistic locking.
+    Optimistic locking assumes that others don't update the same record, and checks this at update time, instead of locking the record for the time it takes to process the information on the client side.
+
 
