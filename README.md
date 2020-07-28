@@ -324,7 +324,7 @@
 
     - After changing the required parameters, we issue a reload command to the server, forcing PostgreSQL to re-read the postgresql.conf file (and all other configuration files).
 
-    + check data directory :
+    + check data directory - PGDATA :
     $ show data_directory;
 
     + Reload Changed parameters
@@ -838,4 +838,122 @@
     If that is happening, then you may gain some performance by moving from explicit locking (SELECT ... FOR UPDATE) to optimistic locking.
     Optimistic locking assumes that others don't update the same record, and checks this at update time, instead of locking the record for the time it takes to process the information on the client side.
 
+    - Crash recovery :
+    If PostgreSQL crashes, there will be a message in the server log with the severity level set to PANIC. PostgreSQL will immediately restart and attempt to recover using the transaction log or Write-Ahead Log (WAL).
+    Should PostgreSQL crash, the WAL will be replayed, which returns the database to the point of the last committed transaction, and hence ensures the durability of any database changes.
 
+    Two parameters control the occurrence of scheduled checkpoints. The first is checkpoint_timeout, which is the number of seconds until the next checkpoint. While this parameter is time-based, the second parameter, max_wal_size, influences the amount of WAL data that will be written before a checkpoint is triggered; the actual limit is computed from that parameter, taking into account the fact that WAL files can only be deleted after one checkpoint (two in older releases). A checkpoint is called whenever either of these two limits is reached.
+    It's tempting to banish checkpoints as much as possible by setting the following parameters:
+       max_wal_size = 20GB
+       checkpoint_timeout = 3600
+
+    + Hot logical backups of one database :
+    Logical backup makes a copy of the data in the database by dumping the content of each table, as well as object definitions for that same database (such as schemas, tables, indexes, views, privileges, triggers, and constraints).
+
+    - Command :
+    : pg_dump -F c <database> > dumpfile
+
+    $ pg_dump -F c blog > dumpfile
+
+    - If you want to dump directely SQL queries on the cli :
+    $ pg_dump -v -d blog
+
+    Note :: that pg_dump does not dump roles (such as users and groups) and tablespaces. Those two are only dumped by pg_dumpall; see the following recipes for more detailed descriptions.
+
+    $ pg_dumpall
+
+    - Get Hot logical backups of all databases on a PostgreSQL SERVER :
+    $ pg_dumpall -g
+
+    - Backups of database object definitions :
+
+    The basic command to dump the definitions for every database of your PostgreSQL instance is as follows:
+    $ pg_dumpall --schema-only > myscriptdump.sql
+
+    This includes all objects, including roles, tablespaces, databases, schemas, tables, indexes, triggers, constraints, views, functions, ownerships, and privileges.
+    If you want to dump PostgreSQL role definitions, use the following command:
+       pg_dumpall --roles-only > myroles.sql
+    If you want to dump PostgreSQL tablespace definitions, use the following command:
+       pg_dumpall --tablespaces-only > mytablespaces.sql
+    If you want to dump both roles and tablespaces, use the following command:
+       pg_dumpall --globals-only > myglobals.sql
+
+    You can also take advantage of a previously generated archive file (see the Hot logical backups of one database recipe) and generate a script file using pg_restore, as follows:
+    $ pg_restore --schema-only mydumpfile > myscriptdump.sql
+
+    - Data Directory of PostgreSQL :
+
+    $ psql -d postgres
+    $ SHOW data_directory;
+    $ cd /usr/local/var/postgres
+
+    + Create a Backup directory :
+    $ mkdir ../standalone
+
+    + Create the archive directory, as follows:
+    $ mkdir ../standalone/archive
+
+    + Start archiving with the following command:
+    $ pg_receivewal -D ../standalone/archive/
+
+    This command will not return, because pg_receivewal will run until interrupted. Therefore, you must open a new Terminal session to perform the next steps, starting with step 4.
+
+    !! 2a and 3a are alternative to steps 2 and 3 (file-based archiving vs Streaming archiving)
+
+    First, we described how to configure streaming archiving (steps 2 and 3). For file-based archiving, follow the alternate steps, 2a and 3a, instead, which are as follows:
+    2a: Set archive_command. In postgresql.conf, you will need to add the following lines and restart the server, or just confirm that they are present:
+                            $ SHOW config_file;
+                            $ code /usr/local/var/postgres/postgresql.conf
+                               archive_mode  =  on
+                               archive_command  =  'test  !  -f  ../standalone/archiving_active  ||
+                               cp  -i  %p  ../standalone/archive/%f'
+
+    The last setting is only split into two lines for typesetting reasons; in postgresql.conf, you must keep it in a single line.
+    You must also check that wal_level is set to either replica or logical, which is normally true as replica is the default setting.
+
+
+    3a: Start archiving, as follows:
+                         cd /usr/local/var/postgres
+                         mkdir ../standalone/archive
+                        touch ../standalone/archiving_active
+    Irrespective of whether you have chosen streaming archiving or file-based archiving, you can now proceed with step 4.
+    4. Define the name of the backup file. The following example includes time information in the filename:
+                BACKUP_FILENAME=$(date '+%Y%m%d%H%M').tar
+                echo $BACKUP_FILENAME
+    5. Start the backup on blog database, as follows:
+                psql -c "select pg_start_backup('standalone')" -d blog
+
+    This step could take a while because PostgreSQL performs a checkpoint before returning to ensure that the data files copied in the next step include all of the latest data changes. See the Understanding and controlling crash recovery recipe from earlier in this chapter for more details about checkpoints.
+    Depending on system configuration and workload, a checkpoint could take a long time, even several minutes. This time is part of the backup duration, which in turn affects the amount of WAL files needed for the backup; so it could be a good idea to reduce the duration of this checkpoint by issuing a CHECKPOINT command just before archiving is activated in step 3, and then by starting the backup in fast mode, as follows:
+                psql -c "select pg_start_backup('standalone', fast := true)"
+    fast mode means that the checkpoint included in pg_start_backup runs as quickly as possible, irrespective of its impact on the system; this should not be a problem because most of the shared buffers will have been written already by the CHECKPOINT command that was issued previously.
+    6. Make a base backup—copy the data files (excluding the content of the pg_wal and pg_wal directories) using the following command:
+                tar -cv \
+                --exclude="pg_wal/*" --exclude="pg_replslot/*" \
+                -f ../standalone/$BACKUP_FILENAME *
+
+    7. Stop the backup, as follows:
+                   psql -c "select pg_stop_backup(), current_timestamp" -d blog
+    8. If you have followed steps 2 and step 3 (for example, if you are using streaming archiving), stop archiving by hitting Ctrl + C in the Terminal session where pg_receivewal is running:
+    8a: Alternatively, if you have chosen steps 2a and 3a (for example, file-based archiving), enter the standalone directory and stop archiving, as follows:
+                           rm ../standalone/archiving_active
+    9. Add the archived files to the standalone backup, as follows: cd ../standalone
+                   tar -rf $BACKUP_FILENAME archive
+    10. Write a recovery.conf file to recover with:
+    echo "restore_command = 'cp archive/%f %p'" > recovery.conf
+                   echo "recovery_end_command = 'rm -R archive' " >> recovery.conf
+    11. Add recovery.conf to the tar archive, as follows: tar -rf $BACKUP_FILENAME recovery.conf
+    12. Clean up:
+                   rm -rf archive recovery.conf
+    13. Store $BACKUP_FILENAME somewhere safe. A safe place is definitely not on the same server.
+    This procedure ends with a file named $BACKUP_FILENAME in the standalone directory. It is imperative to remember to copy it somewhere safe. This file contains everything that you need to recover, including a recovery parameter file.
+
+
+    - Restoring All databases :
+    1. Restoring of all databases means simply restoring each individual database from each dump you took. Confirm that you have the correct backup before you restore:
+               pg_restore --schema-only -v dumpfile | head | grep Started
+    2. Reload the global objects from the script file, as follows:
+                   psql -f myglobals.sql
+    3. Reload all databases. Create the databases using parallel tasks to speed things up. This can be executed remotely without the need to
+    transfer dump files between systems. Note that there is a separate dumpfile for each database:
+                   pg_restore -C -d postgres -j 4 dumpfile
