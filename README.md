@@ -950,6 +950,7 @@
 
 
     - Restoring All databases :
+
     1. Restoring of all databases means simply restoring each individual database from each dump you took. Confirm that you have the correct backup before you restore:
                pg_restore --schema-only -v dumpfile | head | grep Started
     2. Reload the global objects from the script file, as follows:
@@ -957,3 +958,110 @@
     3. Reload all databases. Create the databases using parallel tasks to speed things up. This can be executed remotely without the need to
     transfer dump files between systems. Note that there is a separate dumpfile for each database:
                    pg_restore -C -d postgres -j 4 dumpfile
+
+    Recovery of a dropped/damaged table
+    You may drop or even damage a table in some way. Tables could be damaged for physical reasons, such as disk corruption, or they could also be damaged by running poorly specified UPDATE or DELETE commands, which update too many rows or overwrite critical data.
+    Recovering from this backup situation is a common request.
+
+    - If you've taken a logical backup using the pg_dump utility in a custom file, then you can simply extract the table you want from the dumpfile, like so:
+    : pg_restore -C -d <Database> -t <Corrupted_table> dumpfile | psql
+
+    $ pg_restore -C -d blog -t orders dumpfile | psql
+
+    $ pg_restore -C -d blog -j 2 -t orders dumpfile | psql # to execute parallel jobs.
+
+    ++ The preceding command tries to recreate the table and then load data into it. Note that the pg_restore -t option does not dump any of the indexes on the selected table. This means that we need a slightly more complex procedure than would first appear, and the procedure needs to vary depending on whether we are repairing a damaged table or putting back a dropped table.
+    To repair a damaged table, we want to replace the data in the table in a single transaction. There isn't a specific option to do this, so we need to do the following:
+    1. Dump the data of the table (the -a option) to a script file, as follows:
+        pg_restore -a -t mydamagedtable dumpfile > mydamagedtable.sql
+    2. Edit a script named repair_mydamagedtable.sql with the following code:
+                   BEGIN;
+                   TRUNCATE mydamagedtable;
+                   \i mydamagedtable.sql
+                   COMMIT;
+    3. Then, run it using the following command:
+                   psql -f repair_mydamagedtable.sql
+    If you've already dropped a table, then you need to perform these steps:
+    1. Create a new database in which to work and name it restorework, as follows:
+                   CREATE DATABASE restorework;
+    2. Restore the complete schema (-s option) to the new database, like this: pg_restore -s -d restorework dumpfile
+    3. Now, dump only the definitions of the dropped table in a new file. It will contain CREATE TABLE, indexes, and other constraints and grants. Note that this database has no data in it, so specifying -s is optional, as follows:
+                   pg_dump -t mydroppedtable -s restorework > mydroppedtable.sql
+    4. Now, recreate the table on the main database:
+                   psql -f mydroppedtable.sql
+    5. Now, reload only the data into the maindb database: pg_restore -t mydroppedtable -a -d maindb dumpfile
+    If you've got a very large table, then the fourth step can be a problem because it builds indexes as well. If you want, you can manually edit the script in two pieces—one before the load (preload) and one after the load (postload). There are some ideas for that at the end of this recipe.
+
+
+    + Recover One table :
+    $ pg_dump -t orders -F c blog > dumpfile_blog_table_orders
+
+    - Now, recreate the table in the original server and database using parallel tasks to speed things up. This can be executed remotely without needing to transfer dumpfile between systems:
+    $ pg_restore -d blog -j 2 dumpfile_blog_table_orders
+
+    This means that the only way to extract individual objects from it,
+    at present, is to restore the backup on a new instance, and then make a logical dump, as explained in the previous recipe: there's no way to restore a single table from a physical backup in just a single step.
+
+    + Recovery of a dropped/damaged database :
+
+    Recreate the database in the original server using parallel tasks to speed things along. This can be executed remotely without needing to transfer dumpfile between systems, as shown in the following example, where we use the -j option to specify four parallel processes:
+    $ pg_restore -h myhost -d postgres --create -j 4 dumpfile
+
+    ++ Replication and Upgrades :
+
+    Database replication is the term we use to describe the technology that's
+    used to maintain a copy of a set of data on a remote system.
+
+    There are usually two main reasons for you wanting to do this, and those reasons are often combined:
+    High availability: Reducing the chances of data unavailability by having multiple systems, each holding a full copy of the data.
+    Data movement: Allowing data to be used by additional applications or workload on additional hardware. Examples of this are reference data management (RDM), where a single central server might provide information to many other applications, and business intelligence/reporting systems.
+    Of course, both of those topics are complex areas, and there are many architectures and possibilities for implementing each of them.
+
+    What we will talk about here is high availability, where there is no transformation of the data. We simply copy the data from one PostgreSQL database server to another. So, we are specifically avoiding all discussion on ETL tools, EAI tools, inter-database migration, data-warehousing strategies, and so on.
+
+    Basic concepts
+
+    + A database server that allows a user to make changes is known as a master or primary, or may be described as a source of changes.
+    + A database server that only allows read-only access is known as a hot standby, or sometimes, a slave server, or read replica.
+
+    The key aspect of replication is that data changes are captured on a master, and then transferred to other nodes. In some cases, a node may send data changes to other nodes, which is a process known as cascading or relay. Thus, the master is a sending node, but a sending node does not need to be a master.
+
+    Replication is often categorized by whether more than one master node is allowed, in which case it will be known as multimaster replication. There is a significant difference between how single-master and multimaster systems work, so we'll discuss that aspect in more detail later. Each has its advantages and disadvantages.
+
+    Trigger-based replication has now been superseded by transaction-log- based replication, which provides considerable performance improvements. There is some discussion on exactly how much difference that makes, but log-based replication is approximately twice as fast, though many users have reported much higher gains.
+    Trigger-based systems also have considerably higher replication lag. Lastly, triggers need to be added to each table involved in replication, making these systems more time-consuming to manage and more sensitive to production problems. These factors taken together mean that trigger-based systems will likely be avoided for new developments
+
+     - physical streaming replication (PSR) because we take the transaction log (often known as the write-ahead log (WAL)) and ship that data to the remote node. The WAL contains an exact physical copy of the changes made to a data block, so the remote node is an exact copy of the master. Therefore, the remote node cannot execute transactions that
+     write to the database; this type of node is known as a standby.
+
+    - Starting with PostgreSQL 9.4, we introduced an efficient mechanism for reading the transaction log (WAL) and transforming it into a stream of changes; that is, a process known as logical decoding. This is then the basis for the later, even more useful mechanism, known as logical streaming replication (LSR). This allows a receiver to replicate
+    data without needing to keep an exact copy of the data blocks, as we do with PSR. This has significant advantages
+
+    ++ PSR requires us to have only a single master node, though it allows multiple standbys. LSR can be used for all the same purposes as PSR. It just has fewer restrictions and allows a great range of additional use cases. Crucially, LSR can be used as the basis of multimaster clusters.
+
+
+    - Single-master replication :
+    In single-master replication, if the master dies, one of the standbys must take its place. Otherwise, we will not be able to accept new write transactions. Thus, the designations master and standby are just roles that any node can take at some point. To move the master role to another node, we perform a procedure named switchover. If the master
+    dies and does not recover, then the more severe role change is known as a failover. In many ways, these can be similar, but it helps to use different terms for each event.
+
+
+    The complexity of failover makes single-master replication harder to configure correctly than many people would like it to be. The good news is that from an application perspective, it is safe and easy to retrofit this style of replication to an existing system. Or, put another way, since application developers don't really worry about
+    high availability and replication until the very end of a project, single-master replication is frequently the best solution, be it PSR or LSR.
+
+    Multinode architectures
+    Multinode architectures allow users to write data to multiple nodes concurrently. There are two main categories—tightly coupled and loosely coupled:
+    Tightly coupled database clusters: These allow a single image of the database, so there is less perception that you're even connected to a cluster at all. This consistency comes at a price—the nodes of the cluster cannot be separated geographically, which means if you need to protect against site disasters, then you'll need additional technology to allow disaster recovery. Clustering requires replication as well.
+    Loosely coupled database clusters: These have greater independence for each node, allowing us to spread out nodes across wide areas, such as across multiple continents. You can connect to each node individually. There are two benefits of this. The first is that all data access can be performed quickly against local copies of the data. The second benefit is that we don't need to work out how to route read-only transactions to (a) standby node(s) and read/write transactions to the master node.
+
+    Multimaster replication
+    An example of a loosely coupled system would be bidirectional replication (BDR). Postgres-BDR does not utilize a GTM, so the nodes contain data that is eventually consistent between nodes. This is a performance optimization since tests have showed that trying to use tightly coupled approaches catastrophically limits performance when servers are geographically separated.
+    In its simplest multimaster configuration, each node has a copy of similar data. You can update data on any node and the changes will flow to other nodes. This makes it ideal for databases that have users in many different locations, which is probably the case with most websites. Each location can have its own copy of the application code and database, giving fast response times for all your users, wherever they are located.
+    It is possible to make changes to the same data at the same time on different nodes, causing update conflicts. These could become a problem, but the reality is that it is also easily possible to design applications that do not generate conflicts in normal running, especially if each user is modifying their own data (for example, in social media, retail, and so on).
+
+    Scalability tools
+    Many PostgreSQL users have designed applications that scale naturally by routing database requests based on the client number or a similar natural sharding key. This is what we call manual sharding at the application level.
+    For PostgreSQL 11 and earlier versions, PostgreSQL does not directly support features for automatic write scalability, such as sharding. This is an active area of work, and much will change in this area, though it may take some time.
+    Postgres-XL provides automatic hash sharding and is currently the most complete open source implementation that allows automatic write scalability at the database level.
+    PL/Proxy provides a mature mechanism for database scalability. It was originally designed for Skype, but it is also in use at a number of high- volume sites. It provides most of the things that you'll need to create a scalable cluster. PL/Proxy requires that you define your main database accesses as functions, which requires early decisions about your application architecture.
+
+
