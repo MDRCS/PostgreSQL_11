@@ -286,6 +286,9 @@
     + Display memory allocated :
     $ SHOW work_mem;
 
+    ++ the memory requirements for the database cluster might shoot up. A conservative figure for work_mem can be arrived at by a formula, as shown in the following code:
+    work_mem = (available_ram * 0.25) / max_connections
+
     + Display location of config file of postgres :
     $ SHOW config_file;
     $ code /usr/local/var/postgres/postgresql.conf
@@ -827,6 +830,9 @@
 
     By setting the max_parallel_workers_per_gather parameter, we've improved performance using parallel query. Note that we didn't need to change the query at all.
 
+    - The size of a table has to be at least 8 MB, as defined by the following config setting:
+    $ test=# SHOW min_parallel_table_scan_size;
+
     - Using optimistic locking:
 
     If you perform work in one long transaction, the database will lock rows for long periods of time. Long lock times often result in application performance issues because of long lock waits:
@@ -1007,6 +1013,14 @@
     Recreate the database in the original server using parallel tasks to speed things along. This can be executed remotely without needing to transfer dumpfile between systems, as shown in the following example, where we use the -j option to specify four parallel processes:
     $ pg_restore -h myhost -d postgres --create -j 4 dumpfile
 
+    + Copy in and out data from a Postgres database :
+
+    $ COPY auth_user TO '/Users/MDRAHALI/Desktop/Learning_Roadmap/PostgreSQL_11/users.csv';
+    $ \! cat /Users/MDRAHALI/Desktop/Learning_Roadmap/PostgreSQL_11/users.csv
+    $ \! rm /Users/MDRAHALI/Desktop/Learning_Roadmap/PostgreSQL_11/users.csv
+    $ COPY ( select * from myt ) to '/tmp/file.csv';
+    $ \! head /tmp/file.csv
+
     ++ Replication and Upgrades :
 
     Database replication is the term we use to describe the technology that's
@@ -1063,5 +1077,136 @@
     For PostgreSQL 11 and earlier versions, PostgreSQL does not directly support features for automatic write scalability, such as sharding. This is an active area of work, and much will change in this area, though it may take some time.
     Postgres-XL provides automatic hash sharding and is currently the most complete open source implementation that allows automatic write scalability at the database level.
     PL/Proxy provides a mature mechanism for database scalability. It was originally designed for Skype, but it is also in use at a number of high- volume sites. It provides most of the things that you'll need to create a scalable cluster. PL/Proxy requires that you define your main database accesses as functions, which requires early decisions about your application architecture.
+
+++ streaming replication refers to the master node as the primary node, and the two terms can be used interchangeably :
+![](./static/streaming_replication.png)
+
+    - Configuring primary :
+
+    We have to make a few changes to the primary before we can start streaming the logs. This involves making changes to the configuration settings in postgresql. conf and pg_hba.conf and setting up archiving. To do this, follow these steps:
+    1. First we will make a few changes in postgresql.conf: wal_level = hot_standby
+    As we move from minimal to archive to the hot_standby values for wal_level, the amount of information recorded in WAL files go up:
+           archive_mode = on
+           archive_command = 'rsync -av %p /pgdata/archive/'
+    The preceding parameters decide what should be done with the archived WAL files:
+    archive_timeout = 10
+
+    A WAL switch will be forced after this many seconds have elapsed since the last switch, and there has been any database activity, including a single checkpoint. In streaming replication, we are streaming WAL records as they are generated and are used to keep the standby in sync. We are not dependent on the archived WAL files to keep the standby in sync:
+       max_wal_senders = 2
+    This is the maximum number of concurrent connections from standby servers that can connect to the master for streaming:
+           wal_keep_segments = 10
+    This defines the number of past log files to be kept in pg_xlog. As each segment is of 16 MB (default), we will have about 160 MB of files with this setting. If space is not an issue, this number can be increased to ensure that the standby gets the changes before primary archives the WAL files. In fact, it's a good idea to increase this number to much more than the value of 10.
+    2. Next is an entry in pg_hba.conf:
+    host replication postgres 127.0.0.1/32 trust
+
+    Create the archive directory with the following command:
+       mkdir /pgdata/archive
+    4. Restart the server as follows:
+           pg_ctl restart
+    Now, the primary is up and running with all the necessary configuration changes.
+
+    - Configuring secondary :
+
+    This involves initializing the cluster and making configuration changes. To do this, follow these steps:
+    1. We will initialize a cluster on /pgdata/standby: initdb --pgdata=/pgdata/standby
+    2. Go to /pgdata/standby, edit postgresql.conf and set it: listen_addresses = '127.0.0.1'
+    hot_standby = on
+    The hot_standby parameter takes effect only when the server is in the archive recovery or standby mode. When this is set to on, queries can be executed during recovery.
+    3. In the same directory, create a file named recovery.conf with the following entries:
+           standby_mode = 'on'
+           primary_conninfo = 'host=127.0.0.1 port=2345 user=postgres'
+           restore_command = 'cp /pgdata/archive/%f "%p"'
+           trigger_file = '/pgdata/standby/down.trg'
+
+    We will use the postgres user to connect to the primary server using the trust authentication. It's better to create a user with REPLICATION and LOGIN privileges along with a password and an md5 authentication mode. If we create a user called myreplicationuser for replication purposes, the entry made in pg_hba.conf in the primary node will look like the following command:
+    host  replication     myreplicationuser 127.0.0.1/32   md5
+    The entry in recovery.conf on secondary will be:
+    primary_conninfo = 'host=127.0.0.1 port=2345 user= myreplicationuser
+    password=thepassword'
+    The recovery.conf file is read on cluster startup. Normally, PostgreSQL will scan the file, complete recovery, and rename the file to recovery.done. As we have enabled standby_mode, it will continue running in standby mode, connecting to the server mentioned in the primary_conninfo, and keep streaming the XLOG records.
+
+    + Making the standby in synch with primary :
+
+    Now, we will make sure that the database folders are in sync. Note that we have just initialized the secondary cluster and not started the server. It's better to drop any big tables/databases created for testing purpose to reduce the synching time. Make sure you drop non-default tablespaces because we will create the secondary on the same server. If we don't drop non-default tablespaces, both the primary and the secondary will end up pointing to the same directory and cause issues.
+    In a production setup, the secondary cluster must be on a different machine. Some changes to the configuration files and scripts will be necessary to make this work when the clusters are on separate machines (for example, the failover script).
+    1. In a psql session on the primary node, execute the following command:
+           SELECT pg_start_backup('mybackup');
+    The pg_start_backup command forces a checkpoint in the cluster and writes a file with information about the activity. Once the function is executed, we can have a look in the data directory and we will see a file called backup_label. It has information about the start WAL location, the checkpoint location, time, and a few other pieces of information. We can inspect the contents of the file using more commands:
+           more /pgdata/9.3/backup_label
+           START WAL LOCATION: 3/FA000028 (file 0000000100000003000000FA)
+           CHECKPOINT LOCATION: 3/FA000060
+           BACKUP METHOD: pg_start_backup
+           BACKUP FROM: master
+           START TIME: 2014-07-01 08:25:25 IST
+           LABEL: mybackup
+    2. Open an ssh session as postgres, go to /pgdata/9.3, and rsync like this: rsync -avz --exclude postmaster.pid --exclude pg_hba.conf \ --exclude postgresql.conf --exclude postmaster.opts \ --exclude pg_xlog /pgdata/9.3/ /pgdata/standby
+    Note that we have excluded a few files and rsynced everything else. The files excluded were the postmaster pid file with the process ID, the postmaster options file, which tells us the options used while starting the server, and the two configuration files. The WAL directory was also excluded.
+    3. In the psql session, execute the following command:
+       SELECT pg_stop_backup();
+    This function causes a WAL segment switch; WAL segments are archived. In the archive directory, we can see a file with extension backup:
+           0000000100000003000000FA.00000028.backup
+    It has all the information we had in backup_label plus two pieces of information when the process stopped and the WAL location at which it stopped:
+           STOP WAL LOCATION: 3/FB000050 (file 0000000100000003000000FB)
+           STOP TIME: 2014-07-01 08:28:34 IST
+    4. Ensure that the PGDATA directory is set to the secondary server's directory and start the cluster:
+           pg_ctl start
+           server starting...
+           LOG:  entering standby mode
+           .....
+           LOG:  database system is ready to accept read only connections
+           ...
+           LOG:  started streaming WAL from primary
+    We can see the words streaming and read only. We are good to go. If you did not change the port for the primary to 2345, you will get an error.
+    There are multiple ways to ensure that the standby is in read-only mode. On the standby, at psql, try executing the SQL statement:
+       CREATE TABLE a(id int);
+       ERROR:  cannot execute CREATE TABLE in a read-only transaction
+       STATEMENT:  CREATE TABLE a(id int);
+       ERROR:  cannot execute CREATE TABLE in a read-only transaction
+    Also, you can execute the following SQL statement:
+       SHOW transaction_read_only;
+       transaction_read_only
+       -----------------------
+       On
+    This is the correct way of testing if a node is in read-only mode. We can try the same on the primary node:
+       SHOW transaction_read_only;
+       transaction_read_only
+       -----------------------
+       Off
+
+    So far, we have set up streaming replication. When we make any change to the data or data structures in the primary, it will be reflected in the secondary cluster.
+
+    ++ Diffrent startegies for replication in PostgreSQL database :
+    https://www.postgresql.org/docs/current/different-replication-solutions.html
+
+    + Sharding :
+    Sharding usually means splitting data horizontally; we have 1000 records. We consider splitting them into 10 shards of 100 records and hosting the shards on 10 different servers. When we normalize tables, data gets split vertically. In sharding, data gets split into horizontal blocks. It does sound like partitioning, but here,
+    the partitions/shards are on different servers. Although we said 1000 records, typically the number will be far higher that 1000 (many millions). In sharding,
+    all the database servers will be in read/write mode. There will be some logic that processes each record, figure out which shard it should go to, and send it there. For reads too, similar logic works. Postgres-XC with the CREATE TABLE syntax that can use the DISTRIBUTE BY HASH option is a good example (http://postgres-xc. sourceforge.net/docs/1_0/ddl-basics.html).
+
+    A system that is expected to handle millions of users can be split across servers with users whose names start with A-C hosted on one server, D-G on another, and so
+    on. It's important to study the data, figure out the number of users whose names start with each letter, then decide the distribution. If we don't do this, some servers might end up hosting many users and some others very few users. Ensuring uniform distribution of data based on users' names is not an easy task and hence sharding by name is not recommended.
+    Splitting can be done based on the location of the user, or age or any other appropriate parameter.
+
+![](./static/scaling.png)
+
+    + Point-in-time recovery
+    We covered scalability and one way to scale horizontally and failover. We failed over to a node, which contains all transactions, which were committed till the primary went down.
+    Sometimes, we want to go back in time, retrieve the database cluster at a specific point in time, and then start afresh. For example, we made a release in production last evening. Sanity testing told us things looked fine and we made the system open to users. Sometime this morning, customer support tells us that there is some issue with the system and many orders entered after
+    the release did not look right. Once we are sure that there is a critical bug, the first thing we want to do is to roll back the changes.
+    On the application side, it's relatively easy. Get the previous release from version control system and deploy it. What about the database? If it's a small cluster (a few GBs), it's always possible to take a full backup before each release and restore from that. In case of big databases, that is not a practical solution. We cannot take a full backup of a database with hundreds
+    of GB frequently. We have to resort to a backup taken some time ago and replay the transactions until a point in time (point-in-time recovery, so to speak). The time to replay will depend on how much catch up has to be done.
+
+
+    - Explain Options :
+
+    where option can be one of:
+       ANALYZE [ boolean ]
+       VERBOSE [ boolean ]
+       COSTS [ boolean ]
+       SETTINGS [ boolean ]
+       BUFFERS [ boolean ]
+       TIMING [ boolean ]
+       SUMMARY [ boolean ]
+       FORMAT { TEXT | XML | JSON | YAML }
 
 
