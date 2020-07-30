@@ -1241,3 +1241,48 @@
        FORMAT { TEXT | XML | JSON | YAML }
 
 
+    SQL Optimization :
+
+    + Horizontal scaling (Streaming replication)
+    + Horizontal scaling (add power to the server)
+    + Materialized view (Store a query and refresh each time you want to update result data)
+    + Indexing
+
+        Index every primary key.
+        Index every foreign key.
+        Index every column used in a JOIN clause.
+        Index every column used in a WHERE clause.
+        Study your documentation to learn the "esoteric" indexing options your dbms supports.
+
+    + Concurrent/Parallel execution of queries.
+    + Use Explain Analyze tools to find bottlenecks.
+    + Sharding
+
+
+    + Tutorial on database Indexing :
+
+    $ sqlda=# CREATE INDEX ix_state ON customers(gender);
+
+    - Confirm the presence of the index using \d:
+    $ \d customers;
+    $ EXPLAIN SELECT * FROM customers WHERE gender='M';
+
+    The following example shows how to create a hash index:
+    $ sqlda=# CREATE INDEX ix_gender ON customers USING HASH(gender);
+
+    - Partial Indexes
+    A partial index covers just a subset of a table’s data. It is an index with a WHERE clause. The idea is to increase the efficiency of the index by reducing its size. A smaller index takes less storage, is easier to maintain, and is faster to scan.
+    For example, suppose you allow users to flag comments on your site, which in turn sets the flagged boolean to true. You then process flagged comments in batches. You may want to create an index like so:
+
+    $ CREATE INDEX articles_flagged_created_at_index ON articles(created_at) WHERE flagged
+
+    $ CREATE INDEX idx_salary ON employees(salary);
+    You can create an index on one or many columns at a time. If you commonly filter against multiple columns in your database you can create your indexes against both columns:
+
+    $ CREATE INDEX idx_salary ON employees(last_name, salary);
+
+    - A database to play with :
+
+    $  CREATE DATABASE retail ENCODING 'UTF8' OWNER=mdrahali;
+    $  psql -d retail -f retail_database.sql
+    $  psql -d retail
