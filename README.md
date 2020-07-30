@@ -1084,54 +1084,84 @@
     - Configuring primary :
 
     We have to make a few changes to the primary before we can start streaming the logs. This involves making changes to the configuration settings in postgresql. conf and pg_hba.conf and setting up archiving. To do this, follow these steps:
-    1. First we will make a few changes in postgresql.conf: wal_level = hot_standby
+    1. First we will make a few changes in postgresql.conf:
+
+    $ wal_level = hot_standby
+
     As we move from minimal to archive to the hot_standby values for wal_level, the amount of information recorded in WAL files go up:
            archive_mode = on
-           archive_command = 'rsync -av %p /pgdata/archive/'
+           archive_command = 'rsync -av %p /usr/local/var/postgres/archive/'
     The preceding parameters decide what should be done with the archived WAL files:
-    archive_timeout = 10
 
-    A WAL switch will be forced after this many seconds have elapsed since the last switch, and there has been any database activity, including a single checkpoint. In streaming replication, we are streaming WAL records as they are generated and are used to keep the standby in sync. We are not dependent on the archived WAL files to keep the standby in sync:
+        archive_timeout = 10
+
+    A WAL switch will be forced after this many seconds have elapsed since the last switch, and there has been any database activity, including a single checkpoint.
+    In streaming replication, we are streaming WAL records as they are generated and are used to keep the standby in sync. We are not dependent on the archived WAL files to keep the standby in sync:
        max_wal_senders = 2
     This is the maximum number of concurrent connections from standby servers that can connect to the master for streaming:
            wal_keep_segments = 10
     This defines the number of past log files to be kept in pg_xlog. As each segment is of 16 MB (default), we will have about 160 MB of files with this setting. If space is not an issue, this number can be increased to ensure that the standby gets the changes before primary archives the WAL files. In fact, it's a good idea to increase this number to much more than the value of 10.
+
     2. Next is an entry in pg_hba.conf:
-    host replication postgres 127.0.0.1/32 trust
+
+    $ host replication postgres 127.0.0.1/32 trust
 
     Create the archive directory with the following command:
-       mkdir /pgdata/archive
+        $ cd /usr/local/var/postgres
+        $ mkdir /pgdata/archive
     4. Restart the server as follows:
-           pg_ctl restart
+           PGDATA=/usr/local/var/postgres
+           pg_ctl restart --pgdata=$PGDATA
+
     Now, the primary is up and running with all the necessary configuration changes.
 
     - Configuring secondary :
 
     This involves initializing the cluster and making configuration changes. To do this, follow these steps:
-    1. We will initialize a cluster on /pgdata/standby: initdb --pgdata=/pgdata/standby
-    2. Go to /pgdata/standby, edit postgresql.conf and set it: listen_addresses = '127.0.0.1'
+    1. We will initialize a cluster on /pgdata/standby:
+
+        $ initdb --pgdata=$PGDATA/standby
+
+    2. Go to /pgdata/standby, edit postgresql.conf and set it:
+
+    listen_addresses = '127.0.0.1'
     hot_standby = on
+
     The hot_standby parameter takes effect only when the server is in the archive recovery or standby mode. When this is set to on, queries can be executed during recovery.
     3. In the same directory, create a file named recovery.conf with the following entries:
            standby_mode = 'on'
            primary_conninfo = 'host=127.0.0.1 port=2345 user=postgres'
-           restore_command = 'cp /pgdata/archive/%f "%p"'
-           trigger_file = '/pgdata/standby/down.trg'
+           restore_command = 'cp /usr/local/var/postgres/archive/%f "%p"'
+           trigger_file = '/usr/local/var/postgres/standby/down.trg'
 
-    We will use the postgres user to connect to the primary server using the trust authentication. It's better to create a user with REPLICATION and LOGIN privileges along with a password and an md5 authentication mode. If we create a user called myreplicationuser for replication purposes, the entry made in pg_hba.conf in the primary node will look like the following command:
-    host  replication     myreplicationuser 127.0.0.1/32   md5
+    We will use the postgres user to connect to the primary server using the trust authentication. It's better to create a user with REPLICATION and LOGIN privileges along
+    with a password and an md5 authentication mode. If we create a user called myreplicationuser for replication purposes, the entry made in pg_hba.conf in the primary node
+    will look like the following command:
+
+    + Create a User for replication in the Master. It is discouraged to use superuser postgres in order to setup replication, though it works.
+
+    $ postgres=# CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD 'secret';
+
+    host  replication     replicator 127.0.0.1/32   md5
+
     The entry in recovery.conf on secondary will be:
-    primary_conninfo = 'host=127.0.0.1 port=2345 user= myreplicationuser
-    password=thepassword'
-    The recovery.conf file is read on cluster startup. Normally, PostgreSQL will scan the file, complete recovery, and rename the file to recovery.done. As we have enabled standby_mode, it will continue running in standby mode, connecting to the server mentioned in the primary_conninfo, and keep streaming the XLOG records.
+    primary_conninfo = 'host=127.0.0.1 port=2345 user= replicator
+    password=secret'
 
-    + Making the standby in synch with primary :
+    The recovery.conf file is read on cluster startup. Normally, PostgreSQL will scan the file, complete recovery, and rename the file to recovery.done. As we have enabled standby_mode, it will continue running in standby mode,
+    connecting to the server mentioned in the primary_conninfo, and keep streaming the XLOG records.
 
-    Now, we will make sure that the database folders are in sync. Note that we have just initialized the secondary cluster and not started the server. It's better to drop any big tables/databases created for testing purpose to reduce the synching time. Make sure you drop non-default tablespaces because we will create the secondary on the same server. If we don't drop non-default tablespaces, both the primary and the secondary will end up pointing to the same directory and cause issues.
+    + Making the standby in sync with primary :
+
+    Now, we will make sure that the database folders are in sync. Note that we have just initialized the secondary cluster and not started the server. It's better to drop any big tables/databases created for testing purpose to reduce the synching time.
+    Make sure you drop non-default tablespaces because we will create the secondary on the same server. If we don't drop non-default tablespaces, both the primary and the secondary will end up pointing to the same directory and cause issues.
     In a production setup, the secondary cluster must be on a different machine. Some changes to the configuration files and scripts will be necessary to make this work when the clusters are on separate machines (for example, the failover script).
+
     1. In a psql session on the primary node, execute the following command:
            SELECT pg_start_backup('mybackup');
-    The pg_start_backup command forces a checkpoint in the cluster and writes a file with information about the activity. Once the function is executed, we can have a look in the data directory and we will see a file called backup_label. It has information about the start WAL location, the checkpoint location, time, and a few other pieces of information. We can inspect the contents of the file using more commands:
+    The pg_start_backup command forces a checkpoint in the cluster and writes a file with information about the activity. Once the function is executed, we can have a look in the data directory and we will see a file called backup_label.
+    It has information about the start WAL location, the checkpoint location, time, and a few other pieces of information. We can inspect the contents of the file using more commands:
+
            more /pgdata/9.3/backup_label
            START WAL LOCATION: 3/FA000028 (file 0000000100000003000000FA)
            CHECKPOINT LOCATION: 3/FA000060
@@ -1139,6 +1169,7 @@
            BACKUP FROM: master
            START TIME: 2014-07-01 08:25:25 IST
            LABEL: mybackup
+
     2. Open an ssh session as postgres, go to /pgdata/9.3, and rsync like this: rsync -avz --exclude postmaster.pid --exclude pg_hba.conf \ --exclude postgresql.conf --exclude postmaster.opts \ --exclude pg_xlog /pgdata/9.3/ /pgdata/standby
     Note that we have excluded a few files and rsynced everything else. The files excluded were the postmaster pid file with the process ID, the postmaster options file, which tells us the options used while starting the server, and the two configuration files. The WAL directory was also excluded.
     3. In the psql session, execute the following command:
